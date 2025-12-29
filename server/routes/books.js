@@ -1,65 +1,111 @@
 const express = require('express');
+const Book = require('../models/Book');
+const { auth, authorize } = require('../middleware/auth');
 const router = express.Router();
 
-// Mock books data
-const books = [
-  {
-    id: '1',
-    title: 'The Mahabharata',
-    author: 'Vyasa',
-    price: '₹899',
-    rating: 4.8,
-    category: 'Epic Literature',
-    description: 'Ancient Indian epic',
-    cover: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=300&h=400&fit=crop',
-    inStock: true,
-    storeId: 'store1'
+// Get books (role-based access)
+router.get('/', auth, async (req, res) => {
+  try {
+    const { category, search } = req.query;
+    let query = {};
+
+    // Role-based filtering
+    if (req.user.role === 'store_admin') {
+      query.storeId = req.user.storeId;
+    } else if (req.user.role === 'customer') {
+      query.isActive = true;
+      query.stock = { $gt: 0 };
+    }
+    // super_admin sees all books
+
+    if (category) query.category = new RegExp(category, 'i');
+    if (search) {
+      query.$or = [
+        { title: new RegExp(search, 'i') },
+        { author: new RegExp(search, 'i') }
+      ];
+    }
+
+    const books = await Book.find(query).populate('storeId', 'name');
+    res.json(books);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-];
-
-// Get all books
-router.get('/', (req, res) => {
-  const { category, search, storeId } = req.query;
-  let filteredBooks = [...books];
-
-  if (category) {
-    filteredBooks = filteredBooks.filter(book => 
-      book.category.toLowerCase().includes(category.toLowerCase())
-    );
-  }
-
-  if (search) {
-    filteredBooks = filteredBooks.filter(book =>
-      book.title.toLowerCase().includes(search.toLowerCase()) ||
-      book.author.toLowerCase().includes(search.toLowerCase())
-    );
-  }
-
-  if (storeId) {
-    filteredBooks = filteredBooks.filter(book => book.storeId === storeId);
-  }
-
-  res.json(filteredBooks);
 });
 
 // Get book by ID
-router.get('/:id', (req, res) => {
-  const book = books.find(b => b.id === req.params.id);
-  if (!book) {
-    return res.status(404).json({ message: 'Book not found' });
+router.get('/:id', auth, async (req, res) => {
+  try {
+    let query = { _id: req.params.id };
+    
+    if (req.user.role === 'store_admin') {
+      query.storeId = req.user.storeId;
+    }
+
+    const book = await Book.findOne(query).populate('storeId', 'name');
+    if (!book) {
+      return res.status(404).json({ message: 'Book not found' });
+    }
+    res.json(book);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-  res.json(book);
 });
 
-// Add new book (admin only)
-router.post('/', (req, res) => {
-  const newBook = {
-    id: Date.now().toString(),
-    ...req.body,
-    createdAt: new Date()
-  };
-  books.push(newBook);
-  res.status(201).json(newBook);
+// Add book (store_admin and super_admin only)
+router.post('/', auth, authorize('store_admin', 'super_admin'), async (req, res) => {
+  try {
+    const bookData = {
+      ...req.body,
+      storeId: req.user.role === 'store_admin' ? req.user.storeId : req.body.storeId
+    };
+
+    const book = new Book(bookData);
+    await book.save();
+    await book.populate('storeId', 'name');
+    
+    res.status(201).json(book);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update book
+router.put('/:id', auth, authorize('store_admin', 'super_admin'), async (req, res) => {
+  try {
+    let query = { _id: req.params.id };
+    
+    if (req.user.role === 'store_admin') {
+      query.storeId = req.user.storeId;
+    }
+
+    const book = await Book.findOneAndUpdate(query, req.body, { new: true }).populate('storeId', 'name');
+    if (!book) {
+      return res.status(404).json({ message: 'Book not found' });
+    }
+    res.json(book);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete book
+router.delete('/:id', auth, authorize('store_admin', 'super_admin'), async (req, res) => {
+  try {
+    let query = { _id: req.params.id };
+    
+    if (req.user.role === 'store_admin') {
+      query.storeId = req.user.storeId;
+    }
+
+    const book = await Book.findOneAndDelete(query);
+    if (!book) {
+      return res.status(404).json({ message: 'Book not found' });
+    }
+    res.json({ message: 'Book deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 module.exports = router;
